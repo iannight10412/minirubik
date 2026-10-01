@@ -47,6 +47,8 @@ static const uint8_t twist[3][CUBIES] = {
     ensures \forall integer i; 0 <= i < CUBIES ==>
               \result.o[i] == (state.o[source[face][i]] + twist[face][i]) % 3;
  */
+
+ //順轉90
 static state_t quarter_turn(state_t state, uint8_t face)
 {
     state_t result;
@@ -61,11 +63,19 @@ static state_t quarter_turn(state_t state, uint8_t face)
     for (uint8_t i = 0; i < CUBIES; ++i) {
         uint8_t from = source[face][i];
         result.p[i] = state.p[from];
-        result.o[i] = (uint8_t) ((state.o[from] + twist[face][i]) % 3U);
+        //result.o[i] = (uint8_t) ((state.o[from] + twist[face][i]) % 3U);
+        
+        uint8_t sum = (uint8_t) (state.o[from] + twist[face][i]);
+        if (sum >= 3U)
+        {
+            sum -= 3U;
+        }
+        result.o[i] = sum;
     }
     return result;
 }
 
+//轉180
 static state_t apply_move(state_t state, uint8_t move)
 {
     uint8_t turns = (uint8_t) (move % 3U + 1U);
@@ -84,6 +94,8 @@ static state_t apply_move(state_t state, uint8_t move)
     assigns \nothing;
     ensures \result < STATES;
  */
+
+//把state轉ID
 static uint32_t rank_state(const state_t *state)
 {
     uint32_t p = 0, o = 0;
@@ -121,6 +133,7 @@ static uint32_t rank_state(const state_t *state)
 }
 
 /*@ requires \valid(state); requires rank < STATES; assigns *state; */
+//把ID轉state
 static void unrank_state(uint32_t rank, state_t *state)
 {
     uint8_t available[CUBIES] = {0, 1, 2, 3, 4, 5, 6};
