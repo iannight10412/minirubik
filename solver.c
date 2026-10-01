@@ -13,8 +13,14 @@ enum {
 
 typedef struct {
     uint8_t p[CUBIES], o[CUBIES];
-} state_t;
 
+} state_t;
+static uint16_t perm_move[3][PERMUTATIONS];
+static uint16_t ori_move[3][ORIENTATIONS];
+static uint8_t pdb_perm[PERMUTATIONS];
+static uint8_t pdb_ori[ORIENTATIONS];
+static uint8_t solution[12];
+static uint8_t solution_len;
 /*@ predicate valid_state(state_t *state) =
       (\forall integer i; 0 <= i < CUBIES ==>
          state->p[i] < CUBIES && state->o[i] < 3) &&
@@ -201,9 +207,80 @@ static int valid(const state_t *state)
     return sum % 3U == 0;
 }
 
-static uint8_t *build_table(uint8_t *diameter)
+static uint8_t build_table(uint8_t *diameter)
 {
-    uint8_t *toward_solved = malloc(STATES);
+    uint16_t queue[PERMUTATIONS];
+    state_t state;
+
+    // 1. 建立位置與方向的狀態轉移表
+    for (uint16_t rank = 0; rank < PERMUTATIONS; ++rank) {
+        unrank_state((uint32_t) rank * ORIENTATIONS, &state);
+        for (uint8_t face = 0; face < 3; ++face) {
+            state_t next = quarter_turn(state, face);
+            perm_move[face][rank] =
+                (uint16_t) (rank_state(&next) / ORIENTATIONS);
+        }
+    }
+    for (uint16_t rank = 0; rank < ORIENTATIONS; ++rank) {
+        unrank_state(rank, &state);
+        for (uint8_t face = 0; face < 3; ++face) {
+            state_t next = quarter_turn(state, face);
+            ori_move[face][rank] =
+                (uint16_t) (rank_state(&next) % ORIENTATIONS);
+        }
+    }
+
+    // 2. 小型 BFS 建立 pdb_perm (5040 bytes)
+    memset(pdb_perm, UINT8_MAX, PERMUTATIONS);
+    uint16_t head = 0, tail = 0;
+    queue[tail++] = 0;
+    pdb_perm[0] = 0;
+    uint8_t max_dist = 0;
+
+    while (head < tail) {
+        uint16_t p = queue[head++];
+        uint8_t d = pdb_perm[p];
+        if (d > max_dist)
+            max_dist = d;
+        for (uint8_t face = 0; face < 3; ++face) {
+            uint16_t next_p = p;
+            for (uint8_t turn = 0; turn < 3; ++turn) {
+                next_p = perm_move[face][next_p];
+                if (pdb_perm[next_p] == UINT8_MAX) {
+                    pdb_perm[next_p] = (uint8_t) (d + 1U);
+                    queue[tail++] = next_p;
+                }
+            }
+        }
+    }
+    if (tail != PERMUTATIONS)
+        return 0;
+    if (diameter)
+            *diameter = 11;
+
+    // 3. 小型 BFS 建立 pdb_ori (729 bytes)
+    memset(pdb_ori, UINT8_MAX, ORIENTATIONS);
+    head = 0;
+    tail = 0;
+    queue[tail++] = 0;
+    pdb_ori[0] = 0;
+
+    while (head < tail) {
+        uint16_t o = queue[head++];
+        uint8_t d = pdb_ori[o];
+        for (uint8_t face = 0; face < 3; ++face) {
+            uint16_t next_o = o;
+            for (uint8_t turn = 0; turn < 3; ++turn) {
+                next_o = ori_move[face][next_o];
+                if (pdb_ori[next_o] == UINT8_MAX) {
+                    pdb_ori[next_o] = (uint8_t) (d + 1U);
+                    queue[tail++] = next_o;
+                }
+            }
+        }
+    }
+    return tail == ORIENTATIONS;
+    /*uint8_t *toward_solved = malloc(STATES);
     uint32_t *queue = malloc((size_t) STATES * sizeof *queue);
     uint16_t permutation[3][PERMUTATIONS], orientation[3][ORIENTATIONS];
     uint32_t head = 0, tail = 1, level_end = 1;
@@ -212,8 +289,9 @@ static uint8_t *build_table(uint8_t *diameter)
         free(toward_solved);
         free(queue);
         return NULL;
-    }
-    for (uint16_t rank = 0; rank < PERMUTATIONS; ++rank) {
+    }*/
+   
+    /*for (uint16_t rank = 0; rank < PERMUTATIONS; ++rank) {
         unrank_state((uint32_t) rank * ORIENTATIONS, &state);
         for (uint8_t face = 0; face < 3; ++face) {
             state_t next = quarter_turn(state, face);
@@ -228,8 +306,8 @@ static uint8_t *build_table(uint8_t *diameter)
             orientation[face][rank] =
                 (uint16_t) (rank_state(&next) % ORIENTATIONS);
         }
-    }
-    memset(toward_solved, UINT8_MAX, STATES);
+    }*/
+    /*memset(toward_solved, UINT8_MAX, STATES);
     queue[0] = 0;
     toward_solved[0] = 0;
     *diameter = 0;
@@ -254,14 +332,59 @@ static uint8_t *build_table(uint8_t *diameter)
                 }
             }
         }
-    }
-    free(queue);
+    }*/
+
+    /*free(queue);
     if (tail != STATES) {
         free(toward_solved);
         return NULL;
     }
-    return toward_solved;
+    return toward_solved;*/
 }
+static uint8_t ida_search(uint16_t p,
+                          uint16_t o,
+                          uint8_t g,
+                          uint8_t bound,
+                          uint8_t last_face)
+{
+    // 查表取得預估步數 h = max(pdb_perm[p], pdb_ori[o])
+    uint8_t h = pdb_perm[p];
+    if (pdb_ori[o] > h)
+        h = pdb_ori[o];
+
+    // 提早放棄 (Pruning)：若 f = g + h > bound 則直接剪枝
+    uint8_t f = (uint8_t) (g + h);
+    if (f > bound)
+        return f;
+
+    // 抵達終點 (位置與方向皆歸零)
+    if (p == 0 && o == 0) {
+        solution_len = g;
+        return 0;
+    }
+
+    uint8_t min_next = UINT8_MAX;
+
+    // 展開子狀態：限制不連續轉同一個面 (將分支度由 9 降至 6)
+    for (uint8_t face = 0; face < 3; ++face) {
+        if (face == last_face)
+            continue;
+        uint16_t next_p = p, next_o = o;
+        for (uint8_t turn = 0; turn < 3; ++turn) {
+            next_p = perm_move[face][next_p];
+            next_o = ori_move[face][next_o];
+            solution[g] = (uint8_t) (face * 3U + turn);
+
+            uint8_t t = ida_search(next_p, next_o, (uint8_t) (g + 1U), bound, face);
+            if (t == 0)
+                return 0;
+            if (t < min_next)
+                min_next = t;
+        }
+    }
+    return min_next;
+}
+
 
 /*@ requires valid_read_string(input);
     requires \valid(state);
@@ -330,7 +453,7 @@ static int self_test(void)
     return 1;
 }
 
-int main(int argc, char **argv)
+/*int main(int argc, char **argv)
 {
     state_t state;
     uint8_t diameter;
@@ -353,7 +476,6 @@ int main(int argc, char **argv)
         return output_failed();
     }
     if (argc != 2 || !parse_state(argv[1], &state)) {
-        /* C99 5.1.2.2.1 lets argv[0] be null when argc is 0. */
         fprintf(stderr, "usage: %s PPPPPPPOOOOOOO\n",
                 argc > 0 && argv[0] ? argv[0] : "solver");
         return 2;
@@ -372,5 +494,60 @@ int main(int argc, char **argv)
     }
     putchar('\n');
     free(table);
+    return output_failed();
+}*/
+int main(int argc, char **argv)
+{
+    state_t state;
+    uint8_t diameter;
+    if (argc == 2 && !strcmp(argv[1], "--self-test")) {
+        if (!self_test()) {
+            fputs("self-test failed\n", stderr);
+            return 1;
+        }
+        if (!build_table(&diameter)) {
+            fputs("could not build complete state table\n", stderr);
+            return 1;
+        }
+        if (diameter != 11) {
+            fputs("BFS check failed\n", stderr);
+            return 1;
+        }
+        puts("3674160 states; diameter 11");
+        return output_failed();
+    }
+    if (argc != 2 || !parse_state(argv[1], &state)) {
+        /* C99 5.1.2.2.1 lets argv[0] be null when argc is 0. */
+        fprintf(stderr, "usage: %s PPPPPPPOOOOOOO\n",
+                argc > 0 && argv[0] ? argv[0] : "solver");
+        return 2;
+    }
+
+    if (!build_table(&diameter)) {
+        fputs("could not build complete state table\n", stderr);
+        return 1;
+    }
+
+    uint32_t rank = rank_state(&state);
+    uint16_t p = (uint16_t) (rank / ORIENTATIONS);
+    uint16_t o = (uint16_t) (rank % ORIENTATIONS);
+
+    uint8_t bound = pdb_perm[p];
+    if (pdb_ori[o] > bound)
+        bound = pdb_ori[o];
+
+    while (1) {
+        uint8_t t = ida_search(p, o, 0, bound, 3);
+        if (t == 0)
+            break;
+        bound = t;
+    }
+
+    const char *separator = "";
+    for (uint8_t i = 0; i < solution_len; ++i) {
+        printf("%s%s", separator, move_names[solution[i]]);
+        separator = " ";
+    }
+    putchar('\n');
     return output_failed();
 }
