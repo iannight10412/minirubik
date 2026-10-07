@@ -341,46 +341,87 @@ static uint8_t build_table(uint8_t *diameter)
     }
     return toward_solved;*/
 }
-static uint8_t ida_search(uint16_t p,
-                          uint16_t o,
-                          uint8_t g,
-                          uint8_t bound,
-                          uint8_t last_face)
+static uint8_t ida_search(uint16_t start_p, uint16_t start_o, uint8_t bound)
 {
-    // 查表取得預估步數 h = max(pdb_perm[p], pdb_ori[o])
-    uint8_t h = pdb_perm[p];
-    if (pdb_ori[o] > h)
-        h = pdb_ori[o];
+    uint16_t stk_p[12], stk_o[12];
+    uint8_t stk_face[12], stk_turn[12], stk_last[12];
 
-    // 提早放棄 (Pruning)：若 f = g + h > bound 則直接剪枝
-    uint8_t f = (uint8_t) (g + h);
-    if (f > bound)
-        return f;
-
-    // 抵達終點 (位置與方向皆歸零)
-    if (p == 0 && o == 0) {
-        solution_len = g;
+    uint8_t h0 = pdb_perm[start_p];
+    if (pdb_ori[start_o] > h0)
+        h0 = pdb_ori[start_o];
+    if (h0 > bound)
+        return h0;
+    if (start_p == 0 && start_o == 0) {
+        solution_len = 0;
         return 0;
     }
 
+    int8_t g = 0;
+    stk_p[0] = start_p;
+    stk_o[0] = start_o;
+    stk_face[0] = 0;
+    stk_turn[0] = 0;
+    stk_last[0] = 3; // 3 代表根節點沒有上一個 face
     uint8_t min_next = UINT8_MAX;
 
-    // 展開子狀態：限制不連續轉同一個面 (將分支度由 9 降至 6)
-    for (uint8_t face = 0; face < 3; ++face) {
-        if (face == last_face)
-            continue;
-        uint16_t next_p = p, next_o = o;
-        for (uint8_t turn = 0; turn < 3; ++turn) {
-            next_p = perm_move[face][next_p];
-            next_o = ori_move[face][next_o];
-            solution[g] = (uint8_t) (face * 3U + turn);
+    while (g >= 0) {
+        uint8_t face = stk_face[g];
+        uint8_t turn = stk_turn[g];
 
-            uint8_t t = ida_search(next_p, next_o, (uint8_t) (g + 1U), bound, face);
-            if (t == 0)
-                return 0;
-            if (t < min_next)
-                min_next = t;
+        // 該層 3 個 face 都試完了，退回上一層 (Backtrack)
+        if (face == 3) {
+            --g;
+            continue;
         }
+        // 不連續轉同一個面
+        if (face == stk_last[g]) {
+            ++stk_face[g];
+            continue;
+        }
+
+        // 順轉 90 度推進到當前 turn 的狀態
+        uint16_t next_p = perm_move[face][stk_p[g]];
+        uint16_t next_o = ori_move[face][stk_o[g]];
+        stk_p[g] = next_p;
+        stk_o[g] = next_o;
+
+        // 推進狀態機：若 turn == 2 (270度)，再轉一次 90 度就會剛好回到原位 (360度)！
+        if (turn == 2) {
+            stk_p[g] = perm_move[face][next_p];
+            stk_o[g] = ori_move[face][next_o];
+            stk_turn[g] = 0;
+            ++stk_face[g];
+        } else {
+            ++stk_turn[g];
+        }
+
+        solution[g] = (uint8_t) (face * 3U + turn);
+
+        // 檢查子狀態 (深度 g + 1) 是否已還原
+        if (next_p == 0 && next_o == 0) {
+            solution_len = (uint8_t) (g + 1);
+            return 0;
+        }
+
+        // 計算預估步數 f = (g + 1) + h
+        uint8_t h = pdb_perm[next_p];
+        if (pdb_ori[next_o] > h)
+            h = pdb_ori[next_o];
+        uint8_t f = (uint8_t) (g + 1 + h);
+
+        if (f > bound) {
+            if (f < min_next)
+                min_next = f;
+            continue; // 剪枝 (Pruning)
+        }
+
+        // 進入下一層深度 (Push)
+        ++g;
+        stk_p[g] = next_p;
+        stk_o[g] = next_o;
+        stk_face[g] = 0;
+        stk_turn[g] = 0;
+        stk_last[g] = face;
     }
     return min_next;
 }
@@ -537,7 +578,7 @@ int main(int argc, char **argv)
         bound = pdb_ori[o];
 
     while (1) {
-        uint8_t t = ida_search(p, o, 0, bound, 3);
+        uint8_t t = ida_search(p, o, bound);
         if (t == 0)
             break;
         bound = t;

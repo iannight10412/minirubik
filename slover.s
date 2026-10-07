@@ -378,110 +378,206 @@ bt_bfs_o_done:
     addi sp, sp, 48
     ret
 
-# uint8_t ida_search(uint16_t p, uint16_t o, uint8_t g, uint8_t bound, uint8_t last_face)
+# uint8_t ida_search(uint16_t start_p, uint16_t start_o, uint8_t bound)
+# a0 = start_p, a1 = start_o, a2 = bound
+# uint8_t ida_search(uint16_t start_p, uint16_t start_o, uint8_t bound)
+# a0 = start_p, a1 = start_o, a2 = bound
 ida_search:
     la   t0, pdb_perm
     add  t0, t0, a0
-    lbu  t1, 0(t0)           # h = pdb_perm[p]
+    lbu  t1, 0(t0)           # h = pdb_perm[start_p]
     la   t0, pdb_ori
     add  t0, t0, a1
-    lbu  t2, 0(t0)           # ho = pdb_ori[o]
-    bleu t2, t1, ida_h_ok
+    lbu  t2, 0(t0)           # ho = pdb_ori[start_o]
+    bleu t2, t1, ida_h0_ok
     mv   t1, t2
-ida_h_ok:
-    add  t1, a2, t1          # f = g + h
-    bleu t1, a3, ida_not_pruned
-    mv   a0, t1
+ida_h0_ok:
+    bleu t1, a2, ida_root_ok
+    mv   a0, t1              # if (h0 > bound) return h0
     ret
-ida_not_pruned:
+ida_root_ok:
     or   t0, a0, a1
-    bnez t0, ida_expand
+    bnez t0, ida_init
     la   t0, solution_len
-    sb   a2, 0(t0)
+    sb   zero, 0(t0)         # 若初始已還原，solution_len = 0
     li   a0, 0
     ret
-ida_expand:
+
+ida_init:
     addi sp, sp, -48
-    sw   ra, 44(sp)
-    sw   s0, 40(sp)
-    sw   s1, 36(sp)
-    sw   s2, 32(sp)
-    sw   s3, 28(sp)
-    sw   s4, 24(sp)
-    sw   s5, 20(sp)
-    sw   s6, 16(sp)
-    sw   s7, 12(sp)
-    sw   s8, 8(sp)
-    sw   s9, 4(sp)
+    sw   s0, 44(sp)
+    sw   s1, 40(sp)
+    sw   s2, 36(sp)
+    sw   s3, 32(sp)
+    sw   s4, 28(sp)
+    sw   s5, 24(sp)
+    sw   s6, 20(sp)
+    sw   s7, 16(sp)
+    sw   s8, 12(sp)
+    sw   s9, 8(sp)
+    sw   s10, 4(sp)
+    sw   s11, 0(sp)
 
-    mv   s0, a0              # p
-    mv   s1, a1              # o
-    mv   s2, a2              # g
-    mv   s3, a3              # bound
-    mv   s4, a4              # last_face
-    li   s5, 0xFF            # min_next = 0xFF
-    li   s6, 0               # face = 0
-    la   s8, perm_move
-    la   s9, ori_move
-ida_face_loop:
-    beq  s6, s4, ida_next_face
-    mv   t3, s0              # next_p = p
-    mv   t4, s1              # next_o = o
-    li   s7, 0               # turn = 0
+    mv   s0, a2              # s0 = bound
+    li   s1, 0xFF            # s1 = min_next = 0xFF
+    li   s2, 0               # s2 = g = 0 (目前深度)
+
+    la   s3, stk_p           # uint16_t stk_p[12]
+    la   s4, stk_o           # uint16_t stk_o[12]
+    la   s5, stk_face        # uint8_t  stk_face[12]
+    la   s6, stk_turn        # uint8_t  stk_turn[12]
+    la   s7, stk_last        # uint8_t  stk_last[12]
+    la   s8, pdb_perm        # 常駐基底位址：省去迴圈內所有 la 指令
+    la   s9, pdb_ori
+    la   s10, solution
+    li   s11, 3              # 常駐常數 3
+
+    sh   a0, 0(s3)           # stk_p[0] = start_p
+    sh   a1, 0(s4)           # stk_o[0] = start_o
+    li   t1, 0               # t1 = face = 0
+    li   t3, 0               # t3 = turn = 0
+    li   t2, 3               # t2 = last_face = 3
+    sb   t2, 0(s7)           # stk_last[0] = 3
+
+ida_face_setup:
+    # 檢查 face 是否等於 3 (該層結束，準備 Backtrack)
+    beq  t1, s11, ida_backtrack
+    # 檢查 face 是否等於 last_face (剪枝：不連續轉同一個面)
+    bne  t1, t2, ida_face_valid
+    addi t1, t1, 1
+    beq  t1, s11, ida_backtrack
+
+ida_face_valid:
+    # 只在換 face 時計算一次 perm_move[face] (a3) 與 ori_move[face] (a4)
+    la   a3, perm_move
+    la   a4, ori_move
+    beqz t1, ida_ptr_ready
+    li   t4, 10080
+    li   t5, 1458
+    add  a3, a3, t4
+    add  a4, a4, t5
+    li   t0, 1
+    beq  t1, t0, ida_ptr_ready
+    add  a3, a3, t4
+    add  a4, a4, t5
+ida_ptr_ready:
+    # 若 turn == 0，從 stk_p[g], stk_o[g] 載入初始狀態到 a5, a6
+    # 若是由 Backtrack 回來 (turn > 0)，從 stk_p[g+1], stk_o[g+1] 載入上次轉過的狀態
+    slli t4, s2, 1
+    beqz t3, ida_load_cur
+    addi t4, t4, 2
+ida_load_cur:
+    add  t5, s3, t4
+    lhu  a5, 0(t5)           # a5 = p
+    add  t5, s4, t4
+    lhu  a6, 0(t5)           # a6 = o
+
 ida_turn_loop:
-    sw   t3, 0(sp)           # 暫存前一步狀態
-    slli t0, t3, 1
-    add  t0, s8, t0
-    lhu  t3, 0(t0)           # next_p = perm_move[face][next_p]
-    slli t0, t4, 1
-    add  t0, s9, t0
-    lhu  t4, 0(t0)           # next_o = ori_move[face][next_o]
-    sw   t3, 0(sp)
-    sh   t4, 2(sp)
+    # 順轉 90 度：直接更新暫存器 a5 (next_p) 與 a6 (next_o)
+    slli t4, a5, 1
+    add  t4, a3, t4
+    lhu  a5, 0(t4)           # a5 = perm_move[face][a5]
 
-    slli t0, s6, 1
-    add  t0, t0, s6
-    add  t0, t0, s7          # face * 3 + turn
-    la   t1, solution
-    add  t1, t1, s2
-    sb   t0, 0(t1)           # solution[g] = move
+    slli t4, a6, 1
+    add  t4, a4, t4
+    lhu  a6, 0(t4)           # a6 = ori_move[face][a6]
 
-    mv   a0, t3
-    mv   a1, t4
-    addi a2, s2, 1
-    mv   a3, s3
-    mv   a4, s6
-    jal  ra, ida_search
-    beqz a0, ida_found
-    bgeu a0, s5, ida_no_min
-    mv   s5, a0
-ida_no_min:
-    lhu  t3, 0(sp)
-    lhu  t4, 2(sp)
-    addi s7, s7, 1
-    li   t0, 3
-    bne  s7, t0, ida_turn_loop
-ida_next_face:
-    li   t0, 10080
-    add  s8, s8, t0
-    li   t0, 1458
-    add  s9, s9, t0
-    addi s6, s6, 1
-    li   t0, 3
-    bne  s6, t0, ida_face_loop
-    mv   a0, s5
-ida_found:
-    lw   ra, 44(sp)
-    lw   s0, 40(sp)
-    lw   s1, 36(sp)
-    lw   s2, 32(sp)
-    lw   s3, 28(sp)
-    lw   s4, 24(sp)
-    lw   s5, 20(sp)
-    lw   s6, 16(sp)
-    lw   s7, 12(sp)
-    lw   s8, 8(sp)
-    lw   s9, 4(sp)
+    # 檢查是否抵達終點 (a5 == 0 && a6 == 0)
+    or   t4, a5, a6
+    beqz t4, ida_solved
+
+    # 查表計算 h = max(pdb_perm[a5], pdb_ori[a6])
+    add  t4, s8, a5
+    lbu  t5, 0(t4)           # h = pdb_perm[next_p]
+    add  t4, s9, a6
+    lbu  t6, 0(t4)           # ho = pdb_ori[next_o]
+    bleu t6, t5, ida_h_ok
+    mv   t5, t6
+ida_h_ok:
+    addi t4, s2, 1           # next_g = g + 1
+    add  t5, t4, t5          # f = next_g + h
+    bleu t5, s0, ida_push    # 若 f <= bound，進入下一層深度！
+
+    # 被剪枝 (f > bound)：更新 min_next，並直接留在暫存器推進下一個 turn！
+    bgeu t5, s1, ida_next_turn
+    mv   s1, t5
+ida_next_turn:
+    addi t3, t3, 1           # ++turn
+    bltu t3, s11, ida_turn_loop
+    # 3 個 turn 都試完了，換下一個 face (完全不需第 4 次查表還原！)
+    li   t3, 0
+    addi t1, t1, 1
+    j    ida_face_setup
+
+ida_push:
+    # 只有真正要進入下一層時，才將當前層的 face, turn 與 solution[g] 寫入記憶體！
+    slli t5, t1, 1
+    add  t5, t5, t1
+    add  t5, t5, t3          # move = face * 3 + turn
+    add  t6, s10, s2
+    sb   t5, 0(t6)           # solution[g] = move
+
+    add  t5, s5, s2
+    sb   t1, 0(t5)           # stk_face[g] = face
+    add  t5, s6, s2
+    sb   t3, 0(t5)           # stk_turn[g] = turn
+
+    # 進入下一層 g + 1
+    mv   s2, t4              # g = next_g
+    slli t4, s2, 1
+    add  t5, s3, t4
+    sh   a5, 0(t5)           # stk_p[g] = next_p
+    add  t5, s4, t4
+    sh   a6, 0(t5)           # stk_o[g] = next_o
+    add  t5, s7, s2
+    sb   t1, 0(t5)           # stk_last[g] = face (成為下一層的 last_face)
+
+    mv   t2, t1              # t2 = last_face = 剛才的 face
+    li   t1, 0               # 新一層從 face = 0 開始
+    li   t3, 0               # 新一層從 turn = 0 開始
+    j    ida_face_setup
+
+ida_backtrack:
+    addi s2, s2, -1          # --g
+    bltz s2, ida_done        # 若 g < 0 代表整棵樹搜尋完畢
+    add  t0, s5, s2
+    lbu  t1, 0(t0)           # 恢復上一層的 face
+    add  t0, s6, s2
+    lbu  t3, 0(t0)           # 恢復上一層的 turn
+    add  t0, s7, s2
+    lbu  t2, 0(t0)           # 恢復上一層的 last_face
+
+    addi t3, t3, 1           # 推進到下一個 turn
+    bltu t3, s11, ida_face_valid
+    li   t3, 0
+    addi t1, t1, 1           # 若 turn == 3 則推進到下一個 face
+    j    ida_face_setup
+
+ida_solved:
+    slli t5, t1, 1
+    add  t5, t5, t1
+    add  t5, t5, t3          # move = face * 3 + turn
+    add  t6, s10, s2
+    sb   t5, 0(t6)           # solution[g] = move
+    addi s2, s2, 1
+    la   t4, solution_len
+    sb   s2, 0(t4)           # solution_len = g + 1
+    li   s1, 0               # return 0
+
+ida_done:
+    mv   a0, s1
+    lw   s0, 44(sp)
+    lw   s1, 40(sp)
+    lw   s2, 36(sp)
+    lw   s3, 32(sp)
+    lw   s4, 28(sp)
+    lw   s5, 24(sp)
+    lw   s6, 20(sp)
+    lw   s7, 16(sp)
+    lw   s8, 12(sp)
+    lw   s9, 8(sp)
+    lw   s10, 4(sp)
+    lw   s11, 0(sp)
     addi sp, sp, 48
     ret
 
@@ -564,11 +660,9 @@ main:
     bleu t1, s2, main_ida_loop
     mv   s2, t1
 main_ida_loop:
-    mv   a0, s0
-    mv   a1, s1
-    li   a2, 0
-    mv   a3, s2
-    li   a4, 3
+    mv   a0, s0              # start_p
+    mv   a1, s1              # start_o
+    mv   a2, s2              # bound
     jal  ra, ida_search
     beqz a0, main_done
     mv   s2, a0
@@ -666,3 +760,14 @@ solution:
     .zero 12
 solution_len:
     .zero 1
+    .align 2
+stk_p:
+    .zero 24
+stk_o:
+    .zero 24
+stk_face:
+    .zero 12
+stk_turn:
+    .zero 12
+stk_last:
+    .zero 12
