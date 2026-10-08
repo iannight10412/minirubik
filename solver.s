@@ -1,0 +1,940 @@
+.equ RENDER, 0               # 1: 開啟 Ripes 35x25 LED Matrix 動畫 | 0: 關閉繪圖 (用於 CLI --iret 測速)
+.equ NUM_TESTS, 5            # 1: 單筆測速模式 (跑第一筆 test_input) | 5: 一次自動跑完並驗證全部 5 筆測試案例
+.equ LED_BASE, 0xF0000000    # Ripes 第一個 I/O 周邊 (LED Matrix 0) 的預設記憶體映射位址
+
+.text
+.globl _start
+_start:
+    jal ra, main
+    li a7, 10
+    ecall
+
+# void quarter_turn(const state_t *state, state_t *result, uint8_t face)
+quarter_turn:
+    slli t0, a2, 3
+    sub  t0, t0, a2          # t0 = face * 7
+    la   t1, source
+    add  t1, t1, t0          # &source[face][0]
+    la   t2, twist
+    add  t2, t2, t0          # &twist[face][0]
+    li   t3, 0               # i = 0
+    li   t6, 7
+    li   a6, 3
+qt_loop:
+    lbu  t4, 0(t1)           # from = source[face][i]
+    add  t5, a0, t4          # &state->p[from]
+    lbu  a3, 0(t5)           # state->p[from]
+    lbu  a4, 7(t5)           # state->o[from]
+    lbu  a5, 0(t2)           # twist[face][i]
+    add  a4, a4, a5          # sum = state->o[from] + twist[face][i]
+    bltu a4, a6, qt_skip
+    addi a4, a4, -3
+qt_skip:
+    add  t5, a1, t3          # &result->p[i]
+    sb   a3, 0(t5)           # result->p[i] = state->p[from]
+    sb   a4, 7(t5)           # result->o[i] = sum
+    addi t1, t1, 1
+    addi t2, t2, 1
+    addi t3, t3, 1
+    bne  t3, t6, qt_loop
+    ret
+
+# uint16_t rank_perm(const state_t *state)
+rank_perm:
+    li   t0, 0               # p = 0
+    li   t1, 0               # i = 0
+    li   t6, 6
+    li   a6, 7
+rp_outer:
+    li   t2, 0               # smaller = 0
+    add  t3, a0, t1
+    lbu  t3, 0(t3)           # pi = state->p[i]
+    addi t4, t1, 1           # j = i + 1
+rp_inner:
+    add  t5, a0, t4
+    lbu  t5, 0(t5)           # state->p[j]
+    bgeu t5, t3, rp_not_smaller
+    addi t2, t2, 1
+rp_not_smaller:
+    addi t4, t4, 1
+    bltu t4, a6, rp_inner
+    # p = p * (7 - i) + smaller (純加減法迴圈，無 __mulsi3)
+    sub  t4, a6, t1          # k = 7 - i
+    li   t5, 0               # next_p = 0
+rp_mul:
+    add  t5, t5, t0
+    addi t4, t4, -1
+    bnez t4, rp_mul
+    add  t0, t5, t2
+    addi t1, t1, 1
+    bne  t1, t6, rp_outer
+    mv   a0, t0
+    ret
+
+# uint16_t rank_ori(const state_t *state)
+rank_ori:
+    li   t0, 0               # o = 0
+    li   t1, 0               # i = 0
+    li   t6, 6
+ro_loop:
+    slli t2, t0, 1
+    add  t0, t2, t0          # o * 3
+    add  t3, a0, t1
+    lbu  t3, 7(t3)           # state->o[i]
+    add  t0, t0, t3
+    addi t1, t1, 1
+    bne  t1, t6, ro_loop
+    mv   a0, t0
+    ret
+
+# void unrank_perm(uint16_t p, state_t *state)
+unrank_perm:
+    addi sp, sp, -16
+    li   t0, 0
+    li   t6, 7
+up_init:
+    add  t1, sp, t0
+    sb   t0, 0(t1)           # available[i] = i
+    addi t0, t0, 1
+    bne  t0, t6, up_init
+    la   t2, fact
+    li   t0, 0               # i = 0
+up_outer:
+    lhu  t3, 0(t2)           # f = fact[i]
+    li   t4, 0               # q = 0
+up_div:
+    bltu a0, t3, up_div_done
+    sub  a0, a0, t3
+    addi t4, t4, 1
+    j    up_div
+up_div_done:
+    add  t1, sp, t4
+    lbu  t5, 0(t1)           # available[q]
+    add  a2, a1, t0
+    sb   t5, 0(a2)           # state->p[i] = available[q]
+    sb   zero, 7(a2)         # state->o[i] = 0
+    li   a3, 6
+    sub  a3, a3, t0          # 6 - i
+    mv   t5, t4              # j = q
+up_shift:
+    bgeu t5, a3, up_shift_done
+    add  t1, sp, t5
+    lbu  a4, 1(t1)
+    sb   a4, 0(t1)
+    addi t5, t5, 1
+    j    up_shift
+up_shift_done:
+    addi t2, t2, 2
+    addi t0, t0, 1
+    bne  t0, t6, up_outer
+    addi sp, sp, 16
+    ret
+
+# void unrank_ori(uint16_t o, state_t *state)
+unrank_ori:
+    la   t2, pow3
+    li   t0, 0               # i = 0
+    li   t1, 0               # sum = 0
+    li   t6, 6
+    li   a6, 3
+uo_outer:
+    sb   zero, 0(a1)         # 清空 p[i]
+    lhu  t3, 0(t2)           # p3 = pow3[i]
+    li   t4, 0               # d = 0
+uo_div:
+    bltu a0, t3, uo_div_done
+    sub  a0, a0, t3
+    addi t4, t4, 1
+    j    uo_div
+uo_div_done:
+    sb   t4, 7(a1)           # state->o[i] = d
+    add  t1, t1, t4
+    bltu t1, a6, uo_skip
+    addi t1, t1, -3
+uo_skip:
+    addi a1, a1, 1
+    addi t2, t2, 2
+    addi t0, t0, 1
+    bne  t0, t6, uo_outer
+    sb   zero, 0(a1)
+    beqz t1, uo_zero
+    sub  t1, a6, t1
+uo_zero:
+    sb   t1, 7(a1)           # state->o[6] = (3 - sum) % 3
+    ret
+
+# int valid(const state_t *state)
+valid:
+    li   t0, 0               # sum = 0
+    li   t1, 0               # i = 0
+    li   t6, 7
+    li   a6, 3
+val_outer:
+    add  t2, a0, t1
+    lbu  t3, 0(t2)           # p[i]
+    lbu  t4, 7(t2)           # o[i]
+    bgeu t3, t6, val_fail
+    bgeu t4, a6, val_fail
+    li   t5, 0               # j = 0
+val_inner:
+    beq  t5, t1, val_inner_done
+    add  a2, a0, t5
+    lbu  a2, 0(a2)
+    beq  a2, t3, val_fail
+    addi t5, t5, 1
+    j    val_inner
+val_inner_done:
+    add  t0, t0, t4
+    bltu t0, a6, val_skip
+    addi t0, t0, -3
+val_skip:
+    addi t1, t1, 1
+    bne  t1, t6, val_outer
+    seqz a0, t0
+    ret
+val_fail:
+    li   a0, 0
+    ret
+
+# uint8_t build_table(uint8_t *diameter)
+build_table:
+    addi sp, sp, -48
+    sw   ra, 44(sp)
+    sw   s0, 40(sp)
+    sw   s1, 36(sp)
+    sw   s2, 32(sp)
+    sw   s3, 28(sp)
+    sw   s4, 24(sp)
+    mv   s4, a0              # diameter pointer
+
+    # 1. 建立 perm_move[3][5040]
+    li   s0, 0               # rank = 0
+    li   s1, 5040
+bt_perm_loop:
+    mv   a0, s0
+    mv   a1, sp              # &state (sp+0)
+    jal  ra, unrank_perm
+    li   s2, 0               # face = 0
+    la   s3, perm_move
+bt_perm_face:
+    mv   a0, sp              # &state
+    addi a1, sp, 16          # &next (sp+16)
+    mv   a2, s2
+    jal  ra, quarter_turn
+    addi a0, sp, 16
+    jal  ra, rank_perm
+    slli t0, s0, 1
+    add  t0, s3, t0
+    sh   a0, 0(t0)           # perm_move[face][rank] = rank_perm(&next)
+    li   t1, 10080           # 5040 * 2 bytes stride
+    add  s3, s3, t1
+    addi s2, s2, 1
+    li   t2, 3
+    bne  s2, t2, bt_perm_face
+    addi s0, s0, 1
+    bne  s0, s1, bt_perm_loop
+
+    # 2. 建立 ori_move[3][729]
+    li   s0, 0               # rank = 0
+    li   s1, 729
+bt_ori_loop:
+    mv   a0, s0
+    mv   a1, sp
+    jal  ra, unrank_ori
+    li   s2, 0               # face = 0
+    la   s3, ori_move
+bt_ori_face:
+    mv   a0, sp
+    addi a1, sp, 16
+    mv   a2, s2
+    jal  ra, quarter_turn
+    addi a0, sp, 16
+    jal  ra, rank_ori
+    slli t0, s0, 1
+    add  t0, s3, t0
+    sh   a0, 0(t0)           # ori_move[face][rank] = rank_ori(&next)
+    li   t1, 1458            # 729 * 2 bytes stride
+    add  s3, s3, t1
+    addi s2, s2, 1
+    li   t2, 3
+    bne  s2, t2, bt_ori_face
+    addi s0, s0, 1
+    bne  s0, s1, bt_ori_loop
+
+    # 3. BFS 建立 pdb_perm
+    la   t0, pdb_perm
+    li   t1, 5040
+    li   t2, 0xFF
+bt_init_p:
+    sb   t2, 0(t0)
+    addi t0, t0, 1
+    addi t1, t1, -1
+    bnez t1, bt_init_p
+
+    la   s0, pdb_perm
+    sb   zero, 0(s0)         # pdb_perm[0] = 0
+    la   s1, queue
+    sh   zero, 0(s1)         # queue[0] = 0
+    li   t0, 0               # head = 0
+    li   t1, 1               # tail = 1
+    li   t6, 0               # max_dist = 0
+    li   a6, 0xFF
+bt_bfs_p:
+    bgeu t0, t1, bt_bfs_p_done
+    slli t2, t0, 1
+    add  t2, s1, t2
+    lhu  t3, 0(t2)           # p = queue[head]
+    addi t0, t0, 1
+    add  t2, s0, t3
+    lbu  t4, 0(t2)           # d = pdb_perm[p]
+    bleu t4, t6, bt_skip_max
+    mv   t6, t4
+bt_skip_max:
+    addi t4, t4, 1           # d + 1
+    la   s2, perm_move
+    li   a2, 3               # 3 faces
+    li   a7, 10080           # stride
+bt_bfs_p_face:
+    mv   t5, t3              # next_p = p
+    li   a3, 3               # 3 turns
+bt_bfs_p_turn:
+    slli a4, t5, 1
+    add  a4, s2, a4
+    lhu  t5, 0(a4)           # next_p = perm_move[face][next_p]
+    add  a5, s0, t5
+    lbu  a4, 0(a5)
+    bne  a4, a6, bt_bfs_p_visited
+    sb   t4, 0(a5)           # pdb_perm[next_p] = d + 1
+    slli a4, t1, 1
+    add  a4, s1, a4
+    sh   t5, 0(a4)           # queue[tail++] = next_p
+    addi t1, t1, 1
+bt_bfs_p_visited:
+    addi a3, a3, -1
+    bnez a3, bt_bfs_p_turn
+    add  s2, s2, a7
+    addi a2, a2, -1
+    bnez a2, bt_bfs_p_face
+    j    bt_bfs_p
+bt_bfs_p_done:
+    beqz s4, bt_no_diam
+    sb   t6, 0(s4)           # *diameter = max_dist
+bt_no_diam:
+
+    # 4. BFS 建立 pdb_ori
+    la   t0, pdb_ori
+    li   t1, 729
+    li   t2, 0xFF
+bt_init_o:
+    sb   t2, 0(t0)
+    addi t0, t0, 1
+    addi t1, t1, -1
+    bnez t1, bt_init_o
+
+    la   s0, pdb_ori
+    sb   zero, 0(s0)
+    sh   zero, 0(s1)         # queue[0] = 0
+    li   t0, 0               # head = 0
+    li   t1, 1               # tail = 1
+    li   a6, 0xFF
+bt_bfs_o:
+    bgeu t0, t1, bt_bfs_o_done
+    slli t2, t0, 1
+    add  t2, s1, t2
+    lhu  t3, 0(t2)           # o = queue[head]
+    addi t0, t0, 1
+    add  t2, s0, t3
+    lbu  t4, 0(t2)
+    addi t4, t4, 1           # d + 1
+    la   s2, ori_move
+    li   a2, 3
+    li   a7, 1458            # stride = 729 * 2
+bt_bfs_o_face:
+    mv   t5, t3              # next_o = o
+    li   a3, 3
+bt_bfs_o_turn:
+    slli a4, t5, 1
+    add  a4, s2, a4
+    lhu  t5, 0(a4)           # next_o = ori_move[face][next_o]
+    add  a5, s0, t5
+    lbu  a4, 0(a5)
+    bne  a4, a6, bt_bfs_o_visited
+    sb   t4, 0(a5)
+    slli a4, t1, 1
+    add  a4, s1, a4
+    sh   t5, 0(a4)
+    addi t1, t1, 1
+bt_bfs_o_visited:
+    addi a3, a3, -1
+    bnez a3, bt_bfs_o_turn
+    add  s2, s2, a7
+    addi a2, a2, -1
+    bnez a2, bt_bfs_o_face
+    j    bt_bfs_o
+bt_bfs_o_done:
+    li   a0, 1
+    lw   ra, 44(sp)
+    lw   s0, 40(sp)
+    lw   s1, 36(sp)
+    lw   s2, 32(sp)
+    lw   s3, 28(sp)
+    lw   s4, 24(sp)
+    addi sp, sp, 48
+    ret
+
+# uint8_t ida_search(uint16_t start_p, uint16_t start_o, uint8_t bound)
+# a0 = start_p, a1 = start_o, a2 = bound
+ida_search:
+    la   t0, pdb_perm
+    add  t0, t0, a0
+    lbu  t1, 0(t0)           # h = pdb_perm[start_p]
+    la   t0, pdb_ori
+    add  t0, t0, a1
+    lbu  t2, 0(t0)           # ho = pdb_ori[start_o]
+    bleu t2, t1, ida_h0_ok
+    mv   t1, t2
+ida_h0_ok:
+    bleu t1, a2, ida_root_ok
+    mv   a0, t1              # if (h0 > bound) return h0
+    ret
+ida_root_ok:
+    or   t0, a0, a1
+    bnez t0, ida_init
+    la   t0, solution_len
+    sb   zero, 0(t0)         # 若初始已還原，solution_len = 0
+    li   a0, 0
+    ret
+
+ida_init:
+    addi sp, sp, -48
+    sw   s0, 44(sp)
+    sw   s1, 40(sp)
+    sw   s2, 36(sp)
+    sw   s3, 32(sp)
+    sw   s4, 28(sp)
+    sw   s5, 24(sp)
+    sw   s6, 20(sp)
+    sw   s7, 16(sp)
+    sw   s8, 12(sp)
+    sw   s9, 8(sp)
+    sw   s10, 4(sp)
+    sw   s11, 0(sp)
+
+    mv   s0, a2              # s0 = bound
+    li   s1, 0xFF            # s1 = min_next = 0xFF
+    li   s2, 0               # s2 = g = 0 (目前深度)
+
+    la   s3, stk_p           # uint16_t stk_p[12]
+    la   s4, stk_o           # uint16_t stk_o[12]
+    la   s5, stk_face        # uint8_t  stk_face[12]
+    la   s6, stk_turn        # uint8_t  stk_turn[12]
+    la   s7, stk_last        # uint8_t  stk_last[12]
+    la   s8, pdb_perm        # 常駐基底位址：省去迴圈內所有 la 指令
+    la   s9, pdb_ori
+    la   s10, solution
+    li   s11, 3              # 常駐常數 3
+
+    sh   a0, 0(s3)           # stk_p[0] = start_p
+    sh   a1, 0(s4)           # stk_o[0] = start_o
+    li   t1, 0               # t1 = face = 0
+    li   t3, 0               # t3 = turn = 0
+    li   t2, 3               # t2 = last_face = 3
+    sb   t2, 0(s7)           # stk_last[0] = 3
+
+ida_face_setup:
+    beq  t1, s11, ida_backtrack
+    bne  t1, t2, ida_face_valid
+    addi t1, t1, 1
+    beq  t1, s11, ida_backtrack
+
+ida_face_valid:
+    la   a3, perm_move
+    la   a4, ori_move
+    beqz t1, ida_ptr_ready
+    li   t4, 10080
+    li   t5, 1458
+    add  a3, a3, t4
+    add  a4, a4, t5
+    li   t0, 1
+    beq  t1, t0, ida_ptr_ready
+    add  a3, a3, t4
+    add  a4, a4, t5
+ida_ptr_ready:
+    slli t4, s2, 1
+    beqz t3, ida_load_cur
+    addi t4, t4, 2
+ida_load_cur:
+    add  t5, s3, t4
+    lhu  a5, 0(t5)           # a5 = p
+    add  t5, s4, t4
+    lhu  a6, 0(t5)           # a6 = o
+
+ida_turn_loop:
+    slli t4, a5, 1
+    add  t4, a3, t4
+    lhu  a5, 0(t4)           # a5 = perm_move[face][a5]
+
+    slli t4, a6, 1
+    add  t4, a4, t4
+    lhu  a6, 0(t4)           # a6 = ori_move[face][a6]
+
+    or   t4, a5, a6
+    beqz t4, ida_solved
+
+    add  t4, s8, a5
+    lbu  t5, 0(t4)           # h = pdb_perm[next_p]
+    add  t4, s9, a6
+    lbu  t6, 0(t4)           # ho = pdb_ori[next_o]
+    bleu t6, t5, ida_h_ok
+    mv   t5, t6
+ida_h_ok:
+    addi t4, s2, 1           # next_g = g + 1
+    add  t5, t4, t5          # f = next_g + h
+    bleu t5, s0, ida_push
+
+    bgeu t5, s1, ida_next_turn
+    mv   s1, t5
+ida_next_turn:
+    addi t3, t3, 1           # ++turn
+    bltu t3, s11, ida_turn_loop
+    li   t3, 0
+    addi t1, t1, 1
+    j    ida_face_setup
+
+ida_push:
+    slli t5, t1, 1
+    add  t5, t5, t1
+    add  t5, t5, t3          # move = face * 3 + turn
+    add  t6, s10, s2
+    sb   t5, 0(t6)           # solution[g] = move
+
+    add  t5, s5, s2
+    sb   t1, 0(t5)           # stk_face[g] = face
+    add  t5, s6, s2
+    sb   t3, 0(t5)           # stk_turn[g] = turn
+
+    mv   s2, t4              # g = next_g
+    slli t4, s2, 1
+    add  t5, s3, t4
+    sh   a5, 0(t5)           # stk_p[g] = next_p
+    add  t5, s4, t4
+    sh   a6, 0(t5)           # stk_o[g] = next_o
+    add  t5, s7, s2
+    sb   t1, 0(t5)           # stk_last[g] = face
+
+    mv   t2, t1              # last_face = face
+    li   t1, 0               # face = 0
+    li   t3, 0               # turn = 0
+    j    ida_face_setup
+
+ida_backtrack:
+    addi s2, s2, -1          # --g
+    bltz s2, ida_done
+    add  t0, s5, s2
+    lbu  t1, 0(t0)           # 恢復 face
+    add  t0, s6, s2
+    lbu  t3, 0(t0)           # 恢復 turn
+    add  t0, s7, s2
+    lbu  t2, 0(t0)           # 恢復 last_face
+
+    addi t3, t3, 1           # ++turn
+    bltu t3, s11, ida_face_valid
+    li   t3, 0
+    addi t1, t1, 1           # ++face
+    j    ida_face_setup
+
+ida_solved:
+    slli t5, t1, 1
+    add  t5, t5, t1
+    add  t5, t5, t3          # move = face * 3 + turn
+    add  t6, s10, s2
+    sb   t5, 0(t6)           # solution[g] = move
+    addi s2, s2, 1
+    la   t4, solution_len
+    sb   s2, 0(t4)           # solution_len = g + 1
+    li   s1, 0               # return 0
+
+ida_done:
+    mv   a0, s1
+    lw   s0, 44(sp)
+    lw   s1, 40(sp)
+    lw   s2, 36(sp)
+    lw   s3, 32(sp)
+    lw   s4, 28(sp)
+    lw   s5, 24(sp)
+    lw   s6, 20(sp)
+    lw   s7, 16(sp)
+    lw   s8, 12(sp)
+    lw   s9, 8(sp)
+    lw   s10, 4(sp)
+    lw   s11, 0(sp)
+    addi sp, sp, 48
+    ret
+
+# int parse_state(const char *input, state_t *state)
+parse_state:
+    addi sp, sp, -16
+    sw   ra, 12(sp)
+    li   t0, 0               # i = 0
+    li   t6, 7
+    li   t3, 49              # '1'
+    li   t4, 55              # '7'
+ps_p_loop:
+    add  t1, a0, t0
+    lbu  t2, 0(t1)
+    bltu t2, t3, ps_fail
+    bgtu t2, t4, ps_fail
+    sub  t2, t2, t3
+    add  t1, a1, t0
+    sb   t2, 0(t1)
+    addi t0, t0, 1
+    bne  t0, t6, ps_p_loop
+
+    li   t0, 0
+    li   t4, 51              # '3'
+ps_o_loop:
+    add  t1, a0, t0
+    lbu  t2, 7(t1)
+    bltu t2, t3, ps_fail
+    bgtu t2, t4, ps_fail
+    sub  t2, t2, t3
+    add  t1, a1, t0
+    sb   t2, 7(t1)
+    addi t0, t0, 1
+    bne  t0, t6, ps_o_loop
+
+    lbu  t2, 14(a0)
+    bnez t2, ps_fail
+    mv   a0, a1
+    jal  ra, valid
+    lw   ra, 12(sp)
+    addi sp, sp, 16
+    ret
+ps_fail:
+    li   a0, 0
+    lw   ra, 12(sp)
+    addi sp, sp, 16
+    ret
+
+# void render_cube(const state_t *state)
+render_cube:
+    li   t0, RENDER
+    beqz t0, rc_exit
+    mv   t6, a0                      # t6 = &state
+    li   a7, LED_MATRIX_0_BASE       # 使用 Ripes 官方硬體符號！
+
+    # 1. 先將整個 35x25 (875 顆 LED) 全部塗黑 (0x000000)，徹底清除殘影與雜點！
+    mv   t0, a7
+    li   t1, 875
+rc_clear:
+    sw   zero, 0(t0)
+    addi t0, t0, 4
+    addi t1, t1, -1
+    bnez t1, rc_clear
+
+    la   a6, cubie_colors
+    la   a5, facelet_pos
+    la   a4, palette
+
+    li   t0, 0                       # t0 = pos (0..7)
+rc_pos_loop:
+    li   t1, 7
+    beq  t0, t1, rc_fixed
+    add  t1, t6, t0
+    lbu  t2, 0(t1)                   # t2 = cubie = state->p[pos]
+    lbu  t3, 7(t1)                   # t3 = ori   = state->o[pos]
+    j    rc_draw_3
+rc_fixed:
+    li   t2, 7                       # 固定角塊 7 (ULF)
+    li   t3, 0                       # 方向固定為 0
+rc_draw_3:
+    li   t4, 0                       # t4 = k (0..2，該角塊的 3 個貼紙)
+rc_facelet_loop:
+    addi t5, t4, 3
+    sub  t5, t5, t3
+    li   a0, 3
+    bltu t5, a0, rc_mod_ok
+    addi t5, t5, -3
+    bltu t5, a0, rc_mod_ok
+    addi t5, t5, -3
+rc_mod_ok:
+    slli a0, t2, 1
+    add  a0, a0, t2                  # cubie * 3
+    add  a0, a0, t5
+    add  a0, a6, a0
+    lbu  a0, 0(a0)                   # color_id (0..5)
+    slli a0, a0, 2
+    add  a0, a4, a0
+    lw   a0, 0(a0)                   # a0 = 24-bit RGB 顏色
+
+    lbu  a1, 0(a5)                   # a1 = x0 (0..31)
+    lbu  a2, 1(a5)                   # a2 = y0 (0..22)
+    addi a5, a5, 2
+
+    # 計算貼紙左上角第一個 pixel 的位址: base + ((y0 * 35) + x0) * 4
+    slli t5, a2, 5                   # y0 * 32
+    slli t1, a2, 1                   # y0 * 2
+    add  t5, t5, t1
+    add  t5, t5, a2                  # y0 * 35
+    add  t5, t5, a1                  # y0 * 35 + x0
+    slli t5, t5, 2                   # * 4 bytes
+    add  t5, a7, t5                  # t5 = 第 0 列起始位址
+
+    # 直接畫 3 列 (每列寬 4 pixels，下一列位址直接 +140 bytes，即 35 * 4)
+    sw   a0, 0(t5)
+    sw   a0, 4(t5)
+    sw   a0, 8(t5)
+    sw   a0, 12(t5)
+
+    sw   a0, 140(t5)
+    sw   a0, 144(t5)
+    sw   a0, 148(t5)
+    sw   a0, 152(t5)
+
+    sw   a0, 280(t5)
+    sw   a0, 284(t5)
+    sw   a0, 288(t5)
+    sw   a0, 292(t5)
+
+    addi t4, t4, 1
+    li   t1, 3
+    bne  t4, t1, rc_facelet_loop
+
+    addi t0, t0, 1
+    li   t1, 8
+    bne  t0, t1, rc_pos_loop
+rc_exit:
+    ret
+
+# int main(void)
+main:
+    addi sp, sp, -48
+    sw   ra, 44(sp)
+    sw   s0, 40(sp)
+    sw   s1, 36(sp)
+    sw   s2, 32(sp)
+    sw   s3, 28(sp)
+    sw   s4, 24(sp)
+
+    # 1. 建立轉移表與 PDB (只需在啟動時建立一次)
+    addi a0, sp, 15          # &diameter
+    jal  ra, build_table
+    beqz a0, main_err1
+
+    la   s4, test_input      # 指向第一個測試案例字串
+    li   s3, NUM_TESTS       # 執行 NUM_TESTS 筆測試案例
+test_case_loop:
+    mv   a0, s4
+    mv   a1, sp              # &state (sp+0..13)
+    jal  ra, parse_state
+    beqz a0, main_err2
+
+    mv   a0, sp
+    jal  ra, rank_perm
+    mv   s0, a0              # start_p
+
+    mv   a0, sp
+    jal  ra, rank_ori
+    mv   s1, a0              # start_o
+
+    la   t0, pdb_perm
+    add  t0, t0, s0
+    lbu  s2, 0(t0)           # bound = pdb_perm[start_p]
+    la   t0, pdb_ori
+    add  t0, t0, s1
+    lbu  t1, 0(t0)
+    bleu t1, s2, main_ida_loop
+    mv   s2, t1
+main_ida_loop:
+    mv   a0, s0              # start_p
+    mv   a1, s1              # start_o
+    mv   a2, s2              # bound
+    jal  ra, ida_search
+    beqz a0, main_done
+    mv   s2, a0
+    j    main_ida_loop
+
+main_done:
+    # 重新解析初始狀態到 sp(0..13)，用於程式內自動驗證 (Gate T5) 與逐步動畫繪製
+    mv   a0, s4
+    mv   a1, sp
+    jal  ra, parse_state
+
+    mv   a0, sp
+    jal  ra, render_cube     # 繪製尚未轉動前的初始方塊狀態
+
+    la   s0, solution
+    la   s1, solution_len
+    lbu  s1, 0(s1)           # s1 = solution_len
+    li   s2, 0               # i = 0
+val_print_loop:
+    bgeu s2, s1, val_check_solved
+    beqz s2, vp_no_space
+    li   a0, 32              # 印出空白 ' '
+    li   a7, 11
+    ecall
+vp_no_space:
+    add  t0, s0, s2
+    lbu  t0, 0(t0)           # move = solution[i]
+    slli t1, t0, 2
+    la   t2, move_names
+    add  a0, t2, t1
+    li   a7, 4               # 印出該步名稱
+    ecall
+
+    # 將該步 move 實際套用到 sp 上的 state：face = move / 3, turns = (move % 3) + 1
+    li   a2, 0               # face = 0
+    li   t1, 3
+vp_div3:
+    bltu t0, t1, vp_div3_done
+    addi t0, t0, -3
+    addi a2, a2, 1
+    j    vp_div3
+vp_div3_done:
+    addi t6, t0, 1           # turns = (move % 3) + 1
+vp_turn_loop:
+    mv   a0, sp              # src: sp+0
+    addi a1, sp, 16          # dst: sp+16 (暫存轉動後狀態)
+    sb   t6, 31(sp)          # 保存 t6
+    jal  ra, quarter_turn
+    lbu  t6, 31(sp)
+    li   t0, 0
+    li   t1, 14
+vp_copy:
+    add  t2, sp, t0
+    lbu  t3, 16(t2)
+    sb   t3, 0(t2)
+    addi t0, t0, 1
+    bne  t0, t1, vp_copy
+
+    addi t6, t6, -1
+    bnez t6, vp_turn_loop
+
+    mv   a0, sp
+    jal  ra, render_cube     # 每走完一步，立即重繪 LED Matrix！
+
+    addi s2, s2, 1
+    j    val_print_loop
+
+val_check_solved:
+    li   a0, 10              # 印出換行 '\n'
+    li   a7, 11
+    ecall
+
+    # 【程式內自動驗證 Gate T5】：檢查走完所有步驟後，state 是否完全回到 solved state (p==0 && o==0)
+    mv   a0, sp
+    jal  ra, rank_perm
+    bnez a0, main_err1       # 若位置未還原，回傳錯誤碼 1
+    mv   a0, sp
+    jal  ra, rank_ori
+    bnez a0, main_err1       # 若方向未還原，回傳錯誤碼 1
+
+    addi s4, s4, 15          # 推進到下一筆測試字串 (14 chars + '\0' = 15 bytes)
+    addi s3, s3, -1
+    bnez s3, test_case_loop
+
+    li   a0, 0               # 全部驗證通過！
+    j    main_exit
+main_err1:
+    li   a0, 1
+    j    main_exit
+main_err2:
+    li   a0, 2
+main_exit:
+    lw   ra, 44(sp)
+    lw   s0, 40(sp)
+    lw   s1, 36(sp)
+    lw   s2, 32(sp)
+    lw   s3, 28(sp)
+    lw   s4, 24(sp)
+    addi sp, sp, 48
+    ret
+
+.data
+move_names:
+    .string "R"
+    .zero 2
+    .string "R2"
+    .zero 1
+    .string "R'"
+    .zero 1
+    .string "B"
+    .zero 2
+    .string "B2"
+    .zero 1
+    .string "B'"
+    .zero 1
+    .string "D"
+    .zero 2
+    .string "D2"
+    .zero 1
+    .string "D'"
+    .zero 1
+source:
+    .byte 1, 4, 2, 0, 3, 5, 6
+    .byte 0, 1, 2, 4, 5, 6, 3
+    .byte 0, 2, 5, 3, 1, 4, 6
+twist:
+    .byte 1, 2, 0, 2, 1, 0, 0
+    .byte 0, 0, 0, 1, 2, 1, 2
+    .byte 0, 0, 0, 0, 0, 0, 0
+    .align 2
+fact:
+    .half 720, 120, 24, 6, 2, 1, 1
+    .align 2
+pow3:
+    .half 243, 81, 27, 9, 3, 1
+
+# 測試案例列表 (每個字串皆為 14 chars + '\0' = 15 bytes)
+test_input:
+    .string "54721631111111" # 2. Worst-case Distance-11 state (nodes: 639798)	
+    .string "21345671111111" # 1. 作業指定比較向量 (Distance-11)
+    .string "15746322313112" # 3. Best-case Distance-11 state  (nodes: 140901)
+    .string "12345671111111" # 4. Solved cube (0 步)
+    .string "26143572113221" # 5. Short scramble (3 步: R B D)
+
+    .align 2
+palette:
+    # 6 個面的顏色：U(白), D(黃), F(綠), B(藍), L(橘), R(紅)
+    .word 0xFFFFFF, 0xFFD700, 0x00CC00, 0x0055FF, 0xFF8000, 0xEE0000
+cubie_colors:
+    # 每個角塊的 3 個原始面顏色索引 (0:URB, 1:URF, 2:ULB, 3:DRB, 4:DRF, 5:DLB, 6:DLF, 7:ULF固定)
+    .byte 0,5,3,  0,2,5,  0,3,4,  1,3,5,  1,5,2,  1,4,3,  1,2,4,  0,4,2
+facelet_pos:
+    # 作業規範標準布局：32 + 3 separator columns = 35 across, 18 + 2 separator rows = 20 down
+    .byte 13,0, 22,7, 27,7     # 0: URB
+    .byte 13,3, 13,7, 18,7     # 1: URF
+    .byte  9,0, 31,7,  0,7     # 2: ULB
+    .byte 13,17, 27,10, 22,10  # 3: DRB
+    .byte 13,14, 18,10, 13,10  # 4: DRF
+    .byte  9,17,  0,10, 31,10  # 5: DLB
+    .byte  9,14,  9,10,  4,10  # 6: DLF
+    .byte  9,3,   4,7,   9,7   # 7: ULF (固定角塊)
+
+    .align 2
+perm_move:
+    .zero 30240
+ori_move:
+    .zero 4374
+    .align 2
+queue:
+    .zero 10080
+pdb_perm:
+    .zero 5040
+pdb_ori:
+    .zero 729
+solution:
+    .zero 12
+solution_len:
+    .zero 1
+    .align 2
+stk_p:
+    .zero 24
+stk_o:
+    .zero 24
+stk_face:
+    .zero 12
+stk_turn:
+    .zero 12
+stk_last:
+    .zero 12
