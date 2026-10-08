@@ -1,6 +1,6 @@
-.equ RENDER, 0               # 1: 開啟 Ripes 35x25 LED Matrix 動畫 | 0: 關閉繪圖 (用於 CLI --iret 測速)
-.equ NUM_TESTS, 5            # 1: 單筆測速模式 (跑第一筆 test_input) | 5: 一次自動跑完並驗證全部 5 筆測試案例
-.equ LED_BASE, 0xF0000000    # Ripes 第一個 I/O 周邊 (LED Matrix 0) 的預設記憶體映射位址
+.equ RENDER, 0              
+.equ NUM_TESTS, 5            
+.equ LED_BASE, 0xF0000000    
 
 .text
 .globl _start
@@ -58,7 +58,6 @@ rp_inner:
 rp_not_smaller:
     addi t4, t4, 1
     bltu t4, a6, rp_inner
-    # p = p * (7 - i) + smaller (純加減法迴圈，無 __mulsi3)
     sub  t4, a6, t1          # k = 7 - i
     li   t5, 0               # next_p = 0
 rp_mul:
@@ -207,7 +206,7 @@ build_table:
     sw   s4, 24(sp)
     mv   s4, a0              # diameter pointer
 
-    # 1. 建立 perm_move[3][5040]
+    # 1. construct perm_move[3][5040]
     li   s0, 0               # rank = 0
     li   s1, 5040
 bt_perm_loop:
@@ -234,7 +233,7 @@ bt_perm_face:
     addi s0, s0, 1
     bne  s0, s1, bt_perm_loop
 
-    # 2. 建立 ori_move[3][729]
+    # 2. construct ori_move[3][729]
     li   s0, 0               # rank = 0
     li   s1, 729
 bt_ori_loop:
@@ -261,7 +260,7 @@ bt_ori_face:
     addi s0, s0, 1
     bne  s0, s1, bt_ori_loop
 
-    # 3. BFS 建立 pdb_perm
+    # 3. construct pdb_perm
     la   t0, pdb_perm
     li   t1, 5040
     li   t2, 0xFF
@@ -321,7 +320,7 @@ bt_bfs_p_done:
     sb   t6, 0(s4)           # *diameter = max_dist
 bt_no_diam:
 
-    # 4. BFS 建立 pdb_ori
+    # 4. construct pdb_ori
     la   t0, pdb_ori
     li   t1, 729
     li   t2, 0xFF
@@ -401,7 +400,7 @@ ida_root_ok:
     or   t0, a0, a1
     bnez t0, ida_init
     la   t0, solution_len
-    sb   zero, 0(t0)         # 若初始已還原，solution_len = 0
+    sb   zero, 0(t0)         
     li   a0, 0
     ret
 
@@ -422,17 +421,17 @@ ida_init:
 
     mv   s0, a2              # s0 = bound
     li   s1, 0xFF            # s1 = min_next = 0xFF
-    li   s2, 0               # s2 = g = 0 (目前深度)
+    li   s2, 0               # s2 = g = 0 
 
     la   s3, stk_p           # uint16_t stk_p[12]
     la   s4, stk_o           # uint16_t stk_o[12]
     la   s5, stk_face        # uint8_t  stk_face[12]
     la   s6, stk_turn        # uint8_t  stk_turn[12]
     la   s7, stk_last        # uint8_t  stk_last[12]
-    la   s8, pdb_perm        # 常駐基底位址：省去迴圈內所有 la 指令
+    la   s8, pdb_perm        
     la   s9, pdb_ori
     la   s10, solution
-    li   s11, 3              # 常駐常數 3
+    li   s11, 3              
 
     sh   a0, 0(s3)           # stk_p[0] = start_p
     sh   a1, 0(s4)           # stk_o[0] = start_o
@@ -531,11 +530,11 @@ ida_backtrack:
     addi s2, s2, -1          # --g
     bltz s2, ida_done
     add  t0, s5, s2
-    lbu  t1, 0(t0)           # 恢復 face
+    lbu  t1, 0(t0)           # recover face
     add  t0, s6, s2
-    lbu  t3, 0(t0)           # 恢復 turn
+    lbu  t3, 0(t0)           # recover turn
     add  t0, s7, s2
-    lbu  t2, 0(t0)           # 恢復 last_face
+    lbu  t2, 0(t0)           # Recover last_face
 
     addi t3, t3, 1           # ++turn
     bltu t3, s11, ida_face_valid
@@ -621,9 +620,9 @@ render_cube:
     li   t0, RENDER
     beqz t0, rc_exit
     mv   t6, a0                      # t6 = &state
-    li   a7, LED_MATRIX_0_BASE       # 使用 Ripes 官方硬體符號！
+    li   a7, LED_MATRIX_0_BASE      
 
-    # 1. 先將整個 35x25 (875 顆 LED) 全部塗黑 (0x000000)，徹底清除殘影與雜點！
+    # 全塗黑
     mv   t0, a7
     li   t1, 875
 rc_clear:
@@ -645,10 +644,10 @@ rc_pos_loop:
     lbu  t3, 7(t1)                   # t3 = ori   = state->o[pos]
     j    rc_draw_3
 rc_fixed:
-    li   t2, 7                       # 固定角塊 7 (ULF)
-    li   t3, 0                       # 方向固定為 0
+    li   t2, 7                       # cube 7 (ULF)
+    li   t3, 0                       # dir= 0
 rc_draw_3:
-    li   t4, 0                       # t4 = k (0..2，該角塊的 3 個貼紙)
+    li   t4, 0                       # t4 = k 
 rc_facelet_loop:
     addi t5, t4, 3
     sub  t5, t5, t3
@@ -665,13 +664,13 @@ rc_mod_ok:
     lbu  a0, 0(a0)                   # color_id (0..5)
     slli a0, a0, 2
     add  a0, a4, a0
-    lw   a0, 0(a0)                   # a0 = 24-bit RGB 顏色
+    lw   a0, 0(a0)                   # a0 = 24-bit RGB 
 
     lbu  a1, 0(a5)                   # a1 = x0 (0..31)
     lbu  a2, 1(a5)                   # a2 = y0 (0..22)
     addi a5, a5, 2
 
-    # 計算貼紙左上角第一個 pixel 的位址: base + ((y0 * 35) + x0) * 4
+    # 左上角pixel: base + ((y0 * 35) + x0) * 4
     slli t5, a2, 5                   # y0 * 32
     slli t1, a2, 1                   # y0 * 2
     add  t5, t5, t1
@@ -680,7 +679,7 @@ rc_mod_ok:
     slli t5, t5, 2                   # * 4 bytes
     add  t5, a7, t5                  # t5 = 第 0 列起始位址
 
-    # 直接畫 3 列 (每列寬 4 pixels，下一列位址直接 +140 bytes，即 35 * 4)
+    # 畫3列 
     sw   a0, 0(t5)
     sw   a0, 4(t5)
     sw   a0, 8(t5)
@@ -716,13 +715,13 @@ main:
     sw   s3, 28(sp)
     sw   s4, 24(sp)
 
-    # 1. 建立轉移表與 PDB (只需在啟動時建立一次)
+    # 1. 建立表和PDB
     addi a0, sp, 15          # &diameter
     jal  ra, build_table
     beqz a0, main_err1
 
-    la   s4, test_input      # 指向第一個測試案例字串
-    li   s3, NUM_TESTS       # 執行 NUM_TESTS 筆測試案例
+    la   s4, test_input      
+    li   s3, NUM_TESTS      
 test_case_loop:
     mv   a0, s4
     mv   a1, sp              # &state (sp+0..13)
@@ -755,13 +754,12 @@ main_ida_loop:
     j    main_ida_loop
 
 main_done:
-    # 重新解析初始狀態到 sp(0..13)，用於程式內自動驗證 (Gate T5) 與逐步動畫繪製
     mv   a0, s4
     mv   a1, sp
     jal  ra, parse_state
 
     mv   a0, sp
-    jal  ra, render_cube     # 繪製尚未轉動前的初始方塊狀態
+    jal  ra, render_cube     
 
     la   s0, solution
     la   s1, solution_len
@@ -770,7 +768,7 @@ main_done:
 val_print_loop:
     bgeu s2, s1, val_check_solved
     beqz s2, vp_no_space
-    li   a0, 32              # 印出空白 ' '
+    li   a0, 32             
     li   a7, 11
     ecall
 vp_no_space:
@@ -779,10 +777,10 @@ vp_no_space:
     slli t1, t0, 2
     la   t2, move_names
     add  a0, t2, t1
-    li   a7, 4               # 印出該步名稱
+    li   a7, 4               
     ecall
 
-    # 將該步 move 實際套用到 sp 上的 state：face = move / 3, turns = (move % 3) + 1
+    #state：face = move / 3, turns = (move % 3) + 1
     li   a2, 0               # face = 0
     li   t1, 3
 vp_div3:
@@ -794,7 +792,7 @@ vp_div3_done:
     addi t6, t0, 1           # turns = (move % 3) + 1
 vp_turn_loop:
     mv   a0, sp              # src: sp+0
-    addi a1, sp, 16          # dst: sp+16 (暫存轉動後狀態)
+    addi a1, sp, 16          # dst: sp+16 
     sb   t6, 31(sp)          # 保存 t6
     jal  ra, quarter_turn
     lbu  t6, 31(sp)
@@ -811,21 +809,19 @@ vp_copy:
     bnez t6, vp_turn_loop
 
     mv   a0, sp
-    jal  ra, render_cube     # 每走完一步，立即重繪 LED Matrix！
+    jal  ra, render_cube     # 重畫
 
     addi s2, s2, 1
     j    val_print_loop
 
 val_check_solved:
-    # 【程式內自動驗證 Gate T5】：檢查走完所有步驟後，state 是否完全回到 solved state (p==0 && o==0)
     mv   a0, sp
     jal  ra, rank_perm
-    bnez a0, main_err1       # 若位置未還原，回傳錯誤碼 1
+    bnez a0, main_err1       
     mv   a0, sp
     jal  ra, rank_ori
-    bnez a0, main_err1       # 若方向未還原，回傳錯誤碼 1
+    bnez a0, main_err1       
 
-    # 驗證通過，印出 "[OK]\n" (讓 0 步的 Solved cube 也能清楚顯示在 Console 上！)
     li   a7, 11
     li   a0, 32              # ' '
     ecall
@@ -840,7 +836,7 @@ val_check_solved:
     li   a0, 10              # '\n'
     ecall
 
-    addi s4, s4, 15          # 推進到下一筆測試字串 (14 chars + '\0' = 15 bytes)
+    addi s4, s4, 15         
     addi s3, s3, -1
     bnez s3, test_case_loop
 main_err1:
@@ -893,24 +889,20 @@ fact:
 pow3:
     .half 243, 81, 27, 9, 3, 1
 
-# 測試案例列表 (每個字串皆為 14 chars + '\0' = 15 bytes)
-# 測試案例列表 (每個字串皆為 14 chars + '\0' = 15 bytes)
+
 test_input:
-    .string "54721631111111" # 1. Worst-case Distance-11 state
-    .string "21345671111111" # 2. 作業指定比較向量 (Distance-11)
-    .string "15746322313112" # 3. Best-case Distance-11 state
-    .string "12345671111111" # 4. Solved cube (0 步)
-    .string "25314672312212" # 5. Short scramble (3 步: 解法為 D' B' R')
+    .string "54721631111111" 
+    .string "21345671111111" 
+    .string "15746322313112"  
+    .string "12345671111111" 
+    .string "25314672312212"  
 
     .align 2
 palette:
-    # 6 個面的顏色：U(白), D(黃), F(綠), B(藍), L(橘), R(紅)
     .word 0xFFFFFF, 0xFFD700, 0x00CC00, 0x0055FF, 0xFF8000, 0xEE0000
 cubie_colors:
-    # 每個角塊的 3 個原始面顏色索引 (0:URB, 1:URF, 2:ULB, 3:DRB, 4:DRF, 5:DLB, 6:DLF, 7:ULF固定)
     .byte 0,5,3,  0,2,5,  0,3,4,  1,3,5,  1,5,2,  1,4,3,  1,2,4,  0,4,2
 facelet_pos:
-    # 作業規範標準布局：32 + 3 separator columns = 35 across, 18 + 2 separator rows = 20 down
     .byte 13,0, 22,7, 27,7     # 0: URB
     .byte 13,3, 13,7, 18,7     # 1: URF
     .byte  9,0, 31,7,  0,7     # 2: ULB
@@ -918,7 +910,7 @@ facelet_pos:
     .byte 13,14, 18,10, 13,10  # 4: DRF
     .byte  9,17,  0,10, 31,10  # 5: DLB
     .byte  9,14,  9,10,  4,10  # 6: DLF
-    .byte  9,3,   4,7,   9,7   # 7: ULF (固定角塊)
+    .byte  9,3,   4,7,   9,7   # 7: ULF 
 
     .align 2
 perm_move:
