@@ -368,7 +368,7 @@ static uint8_t ida_search(uint16_t start_p, uint16_t start_o, uint8_t bound)
         uint8_t face = stk_face[g];
         uint8_t turn = stk_turn[g];
 
-        // 該層 3 個 face 都試完了，退回上一層 (Backtrack)
+        // 該層 3 個 face 都試完了，退回上一層 
         if (face == 3) {
             --g;
             continue;
@@ -385,7 +385,7 @@ static uint8_t ida_search(uint16_t start_p, uint16_t start_o, uint8_t bound)
         stk_p[g] = next_p;
         stk_o[g] = next_o;
 
-        // 推進狀態機：若 turn == 2 (270度)，再轉一次 90 度就會剛好回到原位 (360度)！
+        // 若 turn == 2 (270度)，再轉一次 90 度就會回到原位
         if (turn == 2) {
             stk_p[g] = perm_move[face][next_p];
             stk_o[g] = ori_move[face][next_o];
@@ -412,10 +412,10 @@ static uint8_t ida_search(uint16_t start_p, uint16_t start_o, uint8_t bound)
         if (f > bound) {
             if (f < min_next)
                 min_next = f;
-            continue; // 剪枝 (Pruning)
+            continue; // 剪枝 
         }
 
-        // 進入下一層深度 (Push)
+        // 進入下一層 (Push)
         ++g;
         stk_p[g] = next_p;
         stk_o[g] = next_o;
