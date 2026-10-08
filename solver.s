@@ -817,10 +817,6 @@ vp_copy:
     j    val_print_loop
 
 val_check_solved:
-    li   a0, 10              # 印出換行 '\n'
-    li   a7, 11
-    ecall
-
     # 【程式內自動驗證 Gate T5】：檢查走完所有步驟後，state 是否完全回到 solved state (p==0 && o==0)
     mv   a0, sp
     jal  ra, rank_perm
@@ -829,12 +825,24 @@ val_check_solved:
     jal  ra, rank_ori
     bnez a0, main_err1       # 若方向未還原，回傳錯誤碼 1
 
+    # 驗證通過，印出 "[OK]\n" (讓 0 步的 Solved cube 也能清楚顯示在 Console 上！)
+    li   a7, 11
+    li   a0, 32              # ' '
+    ecall
+    li   a0, 91              # '['
+    ecall
+    li   a0, 79              # 'O'
+    ecall
+    li   a0, 75              # 'K'
+    ecall
+    li   a0, 93              # ']'
+    ecall
+    li   a0, 10              # '\n'
+    ecall
+
     addi s4, s4, 15          # 推進到下一筆測試字串 (14 chars + '\0' = 15 bytes)
     addi s3, s3, -1
     bnez s3, test_case_loop
-
-    li   a0, 0               # 全部驗證通過！
-    j    main_exit
 main_err1:
     li   a0, 1
     j    main_exit
@@ -886,12 +894,13 @@ pow3:
     .half 243, 81, 27, 9, 3, 1
 
 # 測試案例列表 (每個字串皆為 14 chars + '\0' = 15 bytes)
+# 測試案例列表 (每個字串皆為 14 chars + '\0' = 15 bytes)
 test_input:
-    .string "54721631111111" # 2. Worst-case Distance-11 state (nodes: 639798)	
-    .string "21345671111111" # 1. 作業指定比較向量 (Distance-11)
-    .string "15746322313112" # 3. Best-case Distance-11 state  (nodes: 140901)
+    .string "54721631111111" # 1. Worst-case Distance-11 state
+    .string "21345671111111" # 2. 作業指定比較向量 (Distance-11)
+    .string "15746322313112" # 3. Best-case Distance-11 state
     .string "12345671111111" # 4. Solved cube (0 步)
-    .string "26143572113221" # 5. Short scramble (3 步: R B D)
+    .string "25314672312212" # 5. Short scramble (3 步: 解法為 D' B' R')
 
     .align 2
 palette:
